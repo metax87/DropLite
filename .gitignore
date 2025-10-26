@@ -1,0 +1,22 @@
+# Node artifacts
+node_modules/
+dist/
+.pnpm-store/
+
+# Go artifacts
+backend/bin/
+backend/tmp/
+*.test
+
+# Environment files
+.env
+.env.*
+
+# IDE/editor
+.vscode/
+.idea/
+.DS_Store
+
+# Logs and caches
+*.log
+coverage/
