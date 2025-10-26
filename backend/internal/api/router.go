@@ -10,7 +10,7 @@ import (
 )
 
 // NewRouter 构建 HTTP 路由，集中注册所有对外服务的端点。
-func NewRouter(cfg *config.Config) http.Handler {
+func NewRouter(cfg *config.Config, fileHandler *FileHandler) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(chimiddleware.RequestID)
@@ -24,6 +24,10 @@ func NewRouter(cfg *config.Config) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	if fileHandler != nil {
+		fileHandler.RegisterRoutes(r)
+	}
 
 	return r
 }

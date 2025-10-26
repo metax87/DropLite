@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: bootstrap dev dev-backend dev-frontend test lint
+.PHONY: bootstrap dev dev-backend dev-frontend test lint migrate
 
 bootstrap:
 	@echo "→ Installing backend dependencies"
@@ -23,3 +23,6 @@ test:
 lint:
 	@cd backend && golangci-lint run ./...
 	@cd frontend && pnpm run lint
+
+migrate:
+	@cd backend && go run ./cmd/migrate

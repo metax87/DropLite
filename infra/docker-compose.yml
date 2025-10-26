@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: droplite-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: droplite
+      POSTGRES_PASSWORD: droplite
+      POSTGRES_DB: droplite
+    ports:
+      - "5432:5432"
+    volumes:
+      - ../tmp/postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "droplite"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

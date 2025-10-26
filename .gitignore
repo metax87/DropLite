@@ -6,6 +6,7 @@ dist/
 # Go artifacts
 backend/bin/
 backend/tmp/
+tmp/
 *.test
 
 # Environment files

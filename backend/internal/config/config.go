@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -15,6 +16,12 @@ type Config struct {
 	CORSAllowedOrigins []string
 	RateLimitRequests  int
 	RateLimitWindow    time.Duration
+	DBHost             string
+	DBPort             int
+	DBUser             string
+	DBPassword         string
+	DBName             string
+	DBSSLMode          string
 }
 
 // Load 从环境变量加载配置，并提供默认值。
@@ -48,12 +55,23 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	dbPort, err := parseIntEnv("DB_PORT", 5432)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		HTTPPort:           port,
 		StorageDir:         storage,
 		CORSAllowedOrigins: corsOrigins,
 		RateLimitRequests:  rateLimitRequests,
 		RateLimitWindow:    rateLimitWindow,
+		DBHost:             envOrDefault("DB_HOST", "127.0.0.1"),
+		DBPort:             dbPort,
+		DBUser:             envOrDefault("DB_USER", "droplite"),
+		DBPassword:         envOrDefault("DB_PASSWORD", "droplite"),
+		DBName:             envOrDefault("DB_NAME", "droplite"),
+		DBSSLMode:          envOrDefault("DB_SSL_MODE", "disable"),
 	}, nil
 }
 
@@ -120,4 +138,29 @@ func parseDurationEnv(key string, defaultValue time.Duration) (time.Duration, er
 		return defaultValue, nil
 	}
 	return value, nil
+}
+
+// PostgresDSN 生成标准 postgres:// 连接串，供数据访问层直接使用。
+func (c *Config) PostgresDSN() string {
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(c.DBUser, c.DBPassword),
+		Host:   fmt.Sprintf("%s:%d", c.DBHost, c.DBPort),
+		Path:   c.DBName,
+	}
+
+	q := url.Values{}
+	if c.DBSSLMode != "" {
+		q.Set("sslmode", c.DBSSLMode)
+	}
+	u.RawQuery = q.Encode()
+
+	return u.String()
+}
+
+func envOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }

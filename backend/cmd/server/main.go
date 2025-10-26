@@ -9,7 +9,12 @@ import (
 
 	"droplite/internal/api"
 	"droplite/internal/config"
+	"droplite/internal/database"
 	"droplite/internal/logging"
+	"droplite/internal/migrations"
+	postgresrepo "droplite/internal/repository/postgres"
+	"droplite/internal/service"
+	"droplite/internal/storage/local"
 )
 
 func main() {
@@ -21,7 +26,23 @@ func main() {
 	logger := logging.New()
 	logger.Println("配置加载完成，开始启动服务")
 
-	router := api.NewRouter(cfg)
+	dbCtx := context.Background()
+	db, err := database.Connect(dbCtx, cfg)
+	if err != nil {
+		logger.Fatalf("数据库连接失败: %v", err)
+	}
+	defer db.Close()
+
+	if err := migrations.Apply(dbCtx, db); err != nil {
+		logger.Fatalf("数据库迁移失败: %v", err)
+	}
+
+	fileRepo := postgresrepo.NewFileRepository(db)
+	fileStorage := local.NewWriter(cfg.StorageDir, "")
+	fileService := service.NewFileService(fileRepo, fileStorage)
+	fileHandler := api.NewFileHandler(fileService)
+
+	router := api.NewRouter(cfg, fileHandler)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,
