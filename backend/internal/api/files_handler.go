@@ -1,9 +1,10 @@
 package api
 
 import (
-	"bytes"
-	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,17 +31,6 @@ func (h *FileHandler) RegisterRoutes(r chi.Router) {
 	})
 }
 
-type createFileRequest struct {
-	OriginalName  string         `json:"original_name"`
-	MimeType      string         `json:"mime_type"`
-	SizeBytes     int64          `json:"size_bytes"`
-	StoragePath   string         `json:"storage_path"`
-	Checksum      *string        `json:"checksum"`
-	Metadata      map[string]any `json:"metadata"`
-	ExpiresAt     *time.Time     `json:"expires_at"`
-	ContentBase64 string         `json:"content_base64"`
-}
-
 type envelope struct {
 	Data any `json:"data"`
 }
@@ -49,39 +39,91 @@ type errorEnvelope struct {
 	Error string `json:"error"`
 }
 
-// CreateFile 仅登记元数据，实际文件写入将由后续存储模块负责。
+const (
+	maxUploadSizeBytes    int64 = 100 * 1024 * 1024 // 100MB
+	multipartMemoryBudget int64 = 16 * 1024 * 1024
+)
+
+// CreateFile 接受 multipart/form-data 上传并登记文件元数据。
 func (h *FileHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	if h == nil {
 		writeError(w, http.StatusInternalServerError, "handler not initialized")
 		return
 	}
-	defer r.Body.Close()
-
-	var req createFileRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if r.Body == nil {
+		writeError(w, http.StatusBadRequest, "request body is empty")
 		return
 	}
 
-	var reader *bytes.Reader
-	if req.ContentBase64 != "" {
-		payload, err := base64.StdEncoding.DecodeString(req.ContentBase64)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid content_base64")
-			return
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSizeBytes+multipartMemoryBudget)
+	defer r.Body.Close()
+
+	if err := r.ParseMultipartForm(multipartMemoryBudget); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid multipart form: %v", err))
+		return
+	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
 		}
-		reader = bytes.NewReader(payload)
+	}()
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file field is required")
+		return
+	}
+	defer file.Close()
+
+	sizeBytes, err := determineFileSize(file, header)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if sizeBytes <= 0 {
+		writeError(w, http.StatusBadRequest, "file must not be empty")
+		return
+	}
+	if sizeBytes > maxUploadSizeBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "file exceeds size limit (100MB)")
+		return
+	}
+
+	mimeType, err := resolveMimeType(header, file)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := rewindFile(file); err != nil {
+		writeError(w, http.StatusInternalServerError, "unable to read uploaded file")
+		return
+	}
+
+	originalName := header.Filename
+	if override := strings.TrimSpace(r.FormValue("original_name")); override != "" {
+		originalName = override
+	}
+
+	metadata, err := parseMetadataField(r.FormValue("metadata"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid metadata: "+err.Error())
+		return
+	}
+
+	expiresAt, err := parseExpiresAt(r.FormValue("expires_at"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid expires_at: "+err.Error())
+		return
 	}
 
 	record, err := h.service.RegisterFile(r.Context(), service.RegisterFileInput{
-		OriginalName: req.OriginalName,
-		MimeType:     req.MimeType,
-		SizeBytes:    req.SizeBytes,
-		StoragePath:  req.StoragePath,
-		Checksum:     req.Checksum,
-		Metadata:     req.Metadata,
-		ExpiresAt:    req.ExpiresAt,
-		Reader:       reader,
+		OriginalName: originalName,
+		MimeType:     mimeType,
+		SizeBytes:    sizeBytes,
+		Checksum:     optionalString(r.FormValue("checksum")),
+		Metadata:     metadata,
+		ExpiresAt:    expiresAt,
+		Reader:       file,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -143,4 +185,87 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, errorEnvelope{Error: message})
+}
+
+func determineFileSize(file multipart.File, header *multipart.FileHeader) (int64, error) {
+	if header != nil && header.Size > 0 {
+		return header.Size, nil
+	}
+
+	seeker, ok := file.(io.Seeker)
+	if !ok {
+		return 0, fmt.Errorf("cannot determine file size")
+	}
+
+	size, err := seeker.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, fmt.Errorf("measure file: %w", err)
+	}
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("rewind file: %w", err)
+	}
+
+	return size, nil
+}
+
+func resolveMimeType(header *multipart.FileHeader, file multipart.File) (string, error) {
+	if header != nil {
+		if value := header.Header.Get("Content-Type"); value != "" {
+			return value, nil
+		}
+	}
+
+	buf := make([]byte, 512)
+	n, err := file.Read(buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return "", fmt.Errorf("detect mime: %w", err)
+	}
+
+	if err := rewindFile(file); err != nil {
+		return "", err
+	}
+	if n == 0 {
+		return "application/octet-stream", nil
+	}
+	return http.DetectContentType(buf[:n]), nil
+}
+
+func rewindFile(file multipart.File) error {
+	seeker, ok := file.(io.Seeker)
+	if !ok {
+		return fmt.Errorf("upload reader is not seekable")
+	}
+	_, err := seeker.Seek(0, io.SeekStart)
+	return err
+}
+
+func parseMetadataField(raw string) (map[string]any, error) {
+	if strings.TrimSpace(raw) == "" {
+		return map[string]any{}, nil
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		return nil, err
+	}
+	return meta, nil
+}
+
+func parseExpiresAt(raw string) (*time.Time, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, nil
+	}
+	ts, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, err
+	}
+	return &ts, nil
+}
+
+func optionalString(raw string) *string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil
+	}
+	return &value
 }

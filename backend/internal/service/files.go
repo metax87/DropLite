@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"droplite/internal/repository"
@@ -43,9 +46,14 @@ func (s *FileService) RegisterFile(ctx context.Context, input RegisterFileInput)
 		return nil, err
 	}
 
+	fileID := uuid.NewString()
 	now := time.Now().UTC()
+
+	if input.StoragePath == "" {
+		input.StoragePath = defaultStoragePath(fileID, input.OriginalName, now)
+	}
 	record := &repository.FileRecord{
-		ID:           uuid.NewString(),
+		ID:           fileID,
 		OriginalName: input.OriginalName,
 		MimeType:     input.MimeType,
 		SizeBytes:    input.SizeBytes,
@@ -62,6 +70,7 @@ func (s *FileService) RegisterFile(ctx context.Context, input RegisterFileInput)
 		if _, err := s.store.Write(ctx, record.StoragePath, input.Reader); err != nil {
 			return nil, fmt.Errorf("write storage: %w", err)
 		}
+		record.Status = repository.FileStatusStored
 	}
 
 	return s.repo.Create(ctx, record)
@@ -83,8 +92,6 @@ func validateRegisterInput(input RegisterFileInput) error {
 		return fmt.Errorf("mime_type is required")
 	case input.SizeBytes <= 0:
 		return fmt.Errorf("size_bytes must be positive")
-	case input.StoragePath == "":
-		return fmt.Errorf("storage_path is required")
 	default:
 		return nil
 	}
@@ -95,4 +102,34 @@ func normalizeMetadata(meta map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	return meta
+}
+
+func defaultStoragePath(fileID, originalName string, ts time.Time) string {
+	safeName := sanitizeFilename(originalName)
+	if safeName == "" {
+		safeName = "file"
+	}
+
+	return filepath.ToSlash(filepath.Join(
+		"uploads",
+		fmt.Sprintf("%04d", ts.Year()),
+		fmt.Sprintf("%02d", int(ts.Month())),
+		fileID,
+		safeName,
+	))
+}
+
+var unsafeFilenameChars = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+
+func sanitizeFilename(name string) string {
+	if name == "" {
+		return ""
+	}
+	base := filepath.Base(strings.TrimSpace(name))
+	base = unsafeFilenameChars.ReplaceAllString(base, "_")
+	base = strings.Trim(base, "._-")
+	if base == "" {
+		return ""
+	}
+	return base
 }

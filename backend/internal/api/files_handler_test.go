@@ -3,9 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -54,16 +54,10 @@ func TestFileHandler_CreateFile(t *testing.T) {
 	svc := service.NewFileService(repo, writer)
 	handler := NewFileHandler(svc)
 
-	payload := map[string]any{
-		"original_name":  "hello.txt",
-		"mime_type":      "text/plain",
-		"size_bytes":     11,
-		"storage_path":   "uploads/hello.txt",
-		"content_base64": base64.StdEncoding.EncodeToString([]byte("hello world")),
-	}
-	body, _ := json.Marshal(payload)
-	req := httptest.NewRequest(http.MethodPost, "/files", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	req := newMultipartRequest(t, map[string]string{
+		"metadata": `{"env":"test"}`,
+		"checksum": "abc123",
+	}, "file", "hello.txt", []byte("hello world"))
 	rec := httptest.NewRecorder()
 
 	handler.CreateFile(rec, req)
@@ -73,6 +67,15 @@ func TestFileHandler_CreateFile(t *testing.T) {
 	}
 	if repo.createRecord == nil {
 		t.Fatal("expected repository Create to be invoked")
+	}
+	if repo.createRecord.OriginalName != "hello.txt" {
+		t.Fatalf("unexpected original name: %s", repo.createRecord.OriginalName)
+	}
+	if repo.createRecord.SizeBytes != 11 {
+		t.Fatalf("unexpected size recorded: %d", repo.createRecord.SizeBytes)
+	}
+	if repo.createRecord.Metadata["env"] != "test" {
+		t.Fatalf("expected metadata env, got %+v", repo.createRecord.Metadata)
 	}
 	if writer.calls != 1 {
 		t.Fatalf("expected writer to be called once, got %d", writer.calls)
@@ -110,4 +113,33 @@ func TestFileHandler_ListFiles(t *testing.T) {
 	if len(resp.Data) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(resp.Data))
 	}
+}
+
+func newMultipartRequest(t *testing.T, fields map[string]string, fieldName, filename string, content []byte) *http.Request {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	part, err := writer.CreateFormFile(fieldName, filename)
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+
+	for k, v := range fields {
+		if err := writer.WriteField(k, v); err != nil {
+			t.Fatalf("write field %s: %v", k, err)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/files", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return req
 }

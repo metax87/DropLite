@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"droplite/internal/repository"
@@ -92,6 +93,9 @@ func TestFileService_RegisterFile_WritesStorageAndRepository(t *testing.T) {
 	if string(writer.data) != string(payload) {
 		t.Fatalf("expected writer data %q, got %q", payload, writer.data)
 	}
+	if record.Status != repository.FileStatusStored {
+		t.Fatalf("expected status stored, got %s", record.Status)
+	}
 }
 
 func TestFileService_RegisterFile_Validation(t *testing.T) {
@@ -147,10 +151,9 @@ func TestFileService_RegisterFile_SkipsStorageWhenNilReader(t *testing.T) {
 	svc := NewFileService(repo, writer)
 
 	record, err := svc.RegisterFile(context.Background(), RegisterFileInput{
-		OriginalName: "meta-only",
+		OriginalName: "meta-only.txt",
 		MimeType:     "text/plain",
 		SizeBytes:    1,
-		StoragePath:  "uploads/meta.txt",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -160,5 +163,31 @@ func TestFileService_RegisterFile_SkipsStorageWhenNilReader(t *testing.T) {
 	}
 	if writer.key != "" {
 		t.Fatalf("writer should not run when reader is nil")
+	}
+	if record.StoragePath == "" {
+		t.Fatalf("expected storage path to be generated")
+	}
+	if record.Status != repository.FileStatusPending {
+		t.Fatalf("expected status pending, got %s", record.Status)
+	}
+}
+
+func TestFileService_RegisterFile_GeneratesSafePath(t *testing.T) {
+	repo := &mockFileRepo{}
+	svc := NewFileService(repo, nil)
+
+	record, err := svc.RegisterFile(context.Background(), RegisterFileInput{
+		OriginalName: "../unsafe name!!.txt",
+		MimeType:     "text/plain",
+		SizeBytes:    10,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if record.StoragePath == "" {
+		t.Fatalf("expected storage path to be generated")
+	}
+	if !strings.HasSuffix(record.StoragePath, "unsafe_name_.txt") {
+		t.Fatalf("expected sanitized suffix, got %s", record.StoragePath)
 	}
 }

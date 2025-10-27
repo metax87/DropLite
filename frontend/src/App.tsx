@@ -1,35 +1,248 @@
-import { useState } from "react";
+import { useMemo, useState, type ChangeEvent } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-// 占位的上传队列用于在后端 API 尚未完成时保持界面交互性。
+const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
+const FILES_ENDPOINT = `${API_BASE}/files`;
+
+interface FileRecord {
+  id: string;
+  original_name: string;
+  mime_type: string;
+  size_bytes: number;
+  storage_path: string;
+  status: string;
+  created_at: string;
+}
+
+interface UploadTask {
+  id: string;
+  filename: string;
+  progress: number;
+  status: "uploading" | "success" | "error";
+  error?: string;
+}
+
+async function fetchFiles(): Promise<FileRecord[]> {
+  const response = await fetch(FILES_ENDPOINT, {
+    headers: { Accept: "application/json" }
+  });
+  if (!response.ok) {
+    throw new Error("无法获取文件列表");
+  }
+  const payload = await response.json();
+  return payload?.data ?? [];
+}
+
+function uploadFile(file: File, onProgress: (value: number) => void) {
+  return new Promise<FileRecord>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", FILES_ENDPOINT);
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const percent = Math.round((event.loaded / event.total) * 100);
+      onProgress(percent);
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const body = JSON.parse(xhr.responseText) as { data?: FileRecord };
+          if (!body?.data) {
+            reject(new Error("服务端未返回文件记录"));
+            return;
+          }
+          resolve(body.data);
+        } catch (error) {
+          reject(new Error("解析服务端响应失败"));
+        }
+        return;
+      }
+
+      try {
+        const errorBody = JSON.parse(xhr.responseText);
+        reject(new Error(errorBody.error ?? "上传失败"));
+      } catch (_error) {
+        reject(new Error("上传失败"));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error("网络错误，请稍后重试"));
+
+    const formData = new FormData();
+    formData.append("file", file, file.name);
+    xhr.send(formData);
+  });
+}
+
+function formatBytes(size: number) {
+  if (!Number.isFinite(size) || size <= 0) return "-";
+  const units = ["B", "KB", "MB", "GB"];
+  const exponent = Math.min(Math.floor(Math.log(size) / Math.log(1024)), units.length - 1);
+  const value = size / Math.pow(1024, exponent);
+  return `${value.toFixed(1)} ${units[exponent]}`;
+}
+
 export default function App() {
-  const [files, setFiles] = useState<File[]>([]);
+  const queryClient = useQueryClient();
+  const [uploads, setUploads] = useState<UploadTask[]>([]);
+  const { data: files = [], isLoading, isFetching, error } = useQuery({
+    queryKey: ["files"],
+    queryFn: fetchFiles
+  });
 
-  function handleSelected(event: React.ChangeEvent<HTMLInputElement>) {
-    if (!event.target.files) return;
-    setFiles(Array.from(event.target.files));
+  const sortedFiles = useMemo(() => {
+    return [...files].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  }, [files]);
+
+  async function handleSelected(event: ChangeEvent<HTMLInputElement>) {
+    const selection = event.target.files;
+    if (!selection || selection.length === 0) {
+      return;
+    }
+
+    const filesToUpload = Array.from(selection);
+    event.target.value = "";
+
+    filesToUpload.forEach((file) => {
+      void startUpload(file);
+    });
+  }
+
+  async function startUpload(file: File) {
+    const uploadId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+    setUploads((current) => [
+      ...current,
+      { id: uploadId, filename: file.name, progress: 0, status: "uploading" }
+    ]);
+
+    try {
+      await uploadFile(file, (value) => {
+        setUploads((current) =>
+          current.map((task) =>
+            task.id === uploadId ? { ...task, progress: value, status: "uploading" } : task
+          )
+        );
+      });
+
+      setUploads((current) =>
+        current.map((task) =>
+          task.id === uploadId ? { ...task, progress: 100, status: "success" } : task
+        )
+      );
+
+      await queryClient.invalidateQueries({ queryKey: ["files"] });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "上传失败";
+      setUploads((current) =>
+        current.map((task) =>
+          task.id === uploadId
+            ? { ...task, status: "error", error: message }
+            : task
+        )
+      );
+    }
   }
 
   return (
-    <main className="app-shell">
-      <section>
+    <main className="app-shell" style={{ maxWidth: 800, margin: "0 auto", padding: "2rem" }}>
+      <header>
         <h1>DropLite</h1>
-        <p>轻量文件上传服务，前后端开发正处于起步阶段。</p>
-      </section>
+        <p>轻量文件上传服务的 React 客户端，现已对接真实的 multipart 上传接口。</p>
+      </header>
 
-      <section>
-        <label htmlFor="uploader">选择文件：</label>
+      <section style={{ marginTop: "2rem" }}>
+        <label htmlFor="uploader">选择文件（支持多选，单个文件 ≤ 100MB）</label>
         <input id="uploader" type="file" multiple onChange={handleSelected} />
+        <p style={{ fontSize: "0.9rem", color: "#555" }}>
+          选择后会立即上传，并在下方显示进度。上传完成会自动刷新列表。
+        </p>
       </section>
 
-      <section>
-        <h2>待上传列表</h2>
-        {files.length === 0 ? (
-          <p>尚未选择文件。</p>
-        ) : (
-          <ul>
-            {files.map((file) => (
-              <li key={file.name}>
-                {file.name} — {(file.size / 1024).toFixed(2)} KB
+      {uploads.length > 0 && (
+        <section style={{ marginTop: "2rem" }}>
+          <h2>上传进度</h2>
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {uploads.map((task) => (
+              <li
+                key={task.id}
+                style={{
+                  padding: "0.75rem 0",
+                  borderBottom: "1px solid #eee"
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span>{task.filename}</span>
+                  <span>
+                    {task.status === "uploading" && `${task.progress}%`}
+                    {task.status === "success" && "完成"}
+                    {task.status === "error" && "失败"}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    height: 6,
+                    background: "#eee",
+                    borderRadius: 4,
+                    overflow: "hidden",
+                    marginTop: 8
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${task.progress}%`,
+                      height: "100%",
+                      transition: "width 0.2s ease",
+                      background:
+                        task.status === "error"
+                          ? "#d9534f"
+                          : task.status === "success"
+                          ? "#5cb85c"
+                          : "#4285f4"
+                    }}
+                  />
+                </div>
+                {task.error && (
+                  <p style={{ color: "#d9534f", margin: "0.5rem 0 0" }}>{task.error}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <section style={{ marginTop: "2rem" }}>
+        <h2>
+          已上传文件 {isFetching && <small style={{ fontSize: "0.85rem" }}>刷新中…</small>}
+        </h2>
+        {isLoading && <p>加载中…</p>}
+        {error && !isLoading && <p style={{ color: "#d9534f" }}>加载失败：{String(error)}</p>}
+        {!isLoading && !error && sortedFiles.length === 0 && <p>暂无文件。</p>}
+        {!isLoading && !error && sortedFiles.length > 0 && (
+          <ul style={{ listStyle: "none", padding: 0 }}>
+            {sortedFiles.map((file) => (
+              <li
+                key={file.id}
+                style={{
+                  padding: "1rem 0",
+                  borderBottom: "1px solid #eee",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: "1rem",
+                  alignItems: "center",
+                  flexWrap: "wrap"
+                }}
+              >
+                <div>
+                  <strong>{file.original_name}</strong>
+                  <div style={{ fontSize: "0.9rem", color: "#555" }}>
+                    {file.mime_type} · {formatBytes(file.size_bytes)}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right", fontSize: "0.85rem", color: "#666" }}>
+                  <div>状态：{file.status}</div>
+                  <div>{new Date(file.created_at).toLocaleString()}</div>
+                </div>
               </li>
             ))}
           </ul>

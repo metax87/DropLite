@@ -18,3 +18,9 @@
 - 内置迁移执行器：`internal/migrations` 读取 embed SQL，`cmd/migrate` + `make migrate` 提供本地 CLI，服务启动时也会自动执行待应用的 schema 变更。
 - 新增存储抽象：`internal/storage` 定义 writer 接口，首个 `storage/local` 实现将文件写入 `STORAGE_DIR`；`FileService` 现会落盘文件后登记元数据，上传 API 正式具备最小可用流程。
 - 为 `/files` 相关逻辑补充单元测试：`internal/service/files_test.go` 验证落盘与校验分支，`internal/api/files_handler_test.go` 覆盖创建与列表响应，确保基础链路可回归。
+
+## 2024-03-26
+- `/files` 上传端点改为 `multipart/form-data`，后端负责生成存储路径、检测 MIME、校验 100MB 大小限制，并支持表单字段传递 metadata/checksum/有效期。
+- `FileService` 现在自动生成安全的存储路径，成功写入对象后会落库为 `stored` 状态，同时扩充单元测试覆盖路径生成与状态转移。
+- handler 测试替换为真实 multipart 构造，移除旧的 base64 JSON 请求；DEV 验证步骤更新为新的调用方式。
+- 前端基于 React Query 对接 `/files` 列表，并使用 `XMLHttpRequest + FormData` 实现实时进度的多文件上传体验，上传完成后自动刷新列表。
