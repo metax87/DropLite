@@ -65,7 +65,7 @@ func main() {
 	}
 
 	fileService := service.NewFileService(fileRepo, fileStorage)
-	fileHandler := api.NewFileHandler(fileService)
+	fileHandler := api.NewFileHandler(fileService, cfg.MaxUploadSize)
 
 	router := api.NewRouter(cfg, fileHandler)
 

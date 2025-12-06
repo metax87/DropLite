@@ -1,17 +1,11 @@
 import { useMemo, useState, type ChangeEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { AuthProvider, useAuth } from "./components/AuthProvider";
+import LoginPage from "./pages/LoginPage";
+import { supabase } from "./lib/supabase";
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
-const API_KEY = import.meta.env.VITE_API_KEY ?? "dev-api-key-123456";
 const FILES_ENDPOINT = `${API_BASE}/files`;
-
-// 通用请求头
-function getAuthHeaders(): Record<string, string> {
-  return {
-    Accept: "application/json",
-    Authorization: `ApiKey ${API_KEY}`
-  };
-}
 
 interface FileRecord {
   id: string;
@@ -31,71 +25,6 @@ interface UploadTask {
   error?: string;
 }
 
-async function fetchFiles(): Promise<FileRecord[]> {
-  const response = await fetch(FILES_ENDPOINT, {
-    headers: getAuthHeaders()
-  });
-  if (!response.ok) {
-    throw new Error("无法获取文件列表");
-  }
-  const payload = await response.json();
-  return payload?.data ?? [];
-}
-
-function uploadFile(file: File, onProgress: (value: number) => void) {
-  return new Promise<FileRecord>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", FILES_ENDPOINT);
-    xhr.setRequestHeader("Authorization", `ApiKey ${API_KEY}`);
-
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable) return;
-      const percent = Math.round((event.loaded / event.total) * 100);
-      onProgress(percent);
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const body = JSON.parse(xhr.responseText) as { data?: FileRecord };
-          if (!body?.data) {
-            reject(new Error("服务端未返回文件记录"));
-            return;
-          }
-          resolve(body.data);
-        } catch (error) {
-          reject(new Error("解析服务端响应失败"));
-        }
-        return;
-      }
-
-      try {
-        const errorBody = JSON.parse(xhr.responseText);
-        reject(new Error(errorBody.error ?? "上传失败"));
-      } catch (_error) {
-        reject(new Error("上传失败"));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error("网络错误，请稍后重试"));
-
-    const formData = new FormData();
-    formData.append("file", file, file.name);
-    xhr.send(formData);
-  });
-}
-
-async function deleteFile(id: string): Promise<void> {
-  const response = await fetch(`${FILES_ENDPOINT}/${id}`, {
-    method: "DELETE",
-    headers: getAuthHeaders()
-  });
-  if (!response.ok) {
-    const errorBody = await response.json().catch(() => ({}));
-    throw new Error(errorBody.error ?? "删除失败");
-  }
-}
-
 function formatBytes(size: number) {
   if (!Number.isFinite(size) || size <= 0) return "-";
   const units = ["B", "KB", "MB", "GB"];
@@ -104,10 +33,34 @@ function formatBytes(size: number) {
   return `${value.toFixed(1)} ${units[exponent]}`;
 }
 
-export default function App() {
+// 主应用界面（仅在登录后渲染）
+function MainApp() {
+  const { session, user } = useAuth();
   const queryClient = useQueryClient();
   const [uploads, setUploads] = useState<UploadTask[]>([]);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+
+  // 这里的 session 理论上不应该为空，因为 MainApp 由 AuthWrapper 保护
+  // 但为了类型安全可以做个简单的断言或 return null（不影响 hooks 顺序）
+  if (!session) return null;
+
+  // 获取带 Token 的 Headers
+  const getAuthHeaders = () => ({
+    Accept: "application/json",
+    Authorization: `Bearer ${session.access_token}`
+  });
+
+  const fetchFiles = async (): Promise<FileRecord[]> => {
+    const response = await fetch(FILES_ENDPOINT, {
+      headers: getAuthHeaders()
+    });
+    if (!response.ok) {
+      throw new Error("无法获取文件列表");
+    }
+    const payload = await response.json();
+    return payload?.data ?? [];
+  };
+
   const { data: files = [], isLoading, isFetching, error } = useQuery({
     queryKey: ["files"],
     queryFn: fetchFiles
@@ -117,21 +70,7 @@ export default function App() {
     return [...files].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   }, [files]);
 
-  async function handleSelected(event: ChangeEvent<HTMLInputElement>) {
-    const selection = event.target.files;
-    if (!selection || selection.length === 0) {
-      return;
-    }
-
-    const filesToUpload = Array.from(selection);
-    event.target.value = "";
-
-    filesToUpload.forEach((file) => {
-      void startUpload(file);
-    });
-  }
-
-  async function startUpload(file: File) {
+  const startUpload = async (file: File) => {
     const uploadId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
     setUploads((current) => [
       ...current,
@@ -139,12 +78,44 @@ export default function App() {
     ]);
 
     try {
-      await uploadFile(file, (value) => {
-        setUploads((current) =>
-          current.map((task) =>
-            task.id === uploadId ? { ...task, progress: value, status: "uploading" } : task
-          )
-        );
+      await new Promise<FileRecord>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", FILES_ENDPOINT);
+        xhr.setRequestHeader("Authorization", `Bearer ${session.access_token}`);
+
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable) return;
+          const percent = Math.round((event.loaded / event.total) * 100);
+          setUploads((current) =>
+            current.map((task) =>
+              task.id === uploadId ? { ...task, progress: percent, status: "uploading" } : task
+            )
+          );
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const body = JSON.parse(xhr.responseText);
+              resolve(body.data);
+            } catch (e) {
+              reject(new Error("解析响应失败"));
+            }
+          } else {
+            try {
+              const body = JSON.parse(xhr.responseText);
+              reject(new Error(body.error ?? "上传失败"));
+            } catch (e) {
+              reject(new Error("上传失败"));
+            }
+          }
+        };
+
+        xhr.onerror = () => reject(new Error("网络错误"));
+
+        const formData = new FormData();
+        formData.append("file", file, file.name);
+        xhr.send(formData);
       });
 
       setUploads((current) =>
@@ -152,44 +123,68 @@ export default function App() {
           task.id === uploadId ? { ...task, progress: 100, status: "success" } : task
         )
       );
-
       await queryClient.invalidateQueries({ queryKey: ["files"] });
     } catch (err) {
       const message = err instanceof Error ? err.message : "上传失败";
       setUploads((current) =>
         current.map((task) =>
-          task.id === uploadId
-            ? { ...task, status: "error", error: message }
-            : task
+          task.id === uploadId ? { ...task, status: "error", error: message } : task
         )
       );
     }
+  };
+
+  async function handleSelected(event: ChangeEvent<HTMLInputElement>) {
+    const selection = event.target.files;
+    if (!selection) return;
+    Array.from(selection).forEach(file => void startUpload(file));
+    event.target.value = "";
   }
 
   function handleDownload(file: FileRecord) {
-    if (file.status !== "stored") {
-      alert("文件尚未就绪，无法下载");
-      return;
-    }
-    window.open(`${FILES_ENDPOINT}/${file.id}/download`, "_blank");
+    // 使用 fetch 获取下载链接或 blob，这里简化为直接打开链接
+    // 注意：如果是私有文件，通常需要预签名 URL 或通过 API 代理
+    // 对于 DropLite，下载 API 同样需要 Bearer Token。
+    // 由于浏览器直接打开 URL 不支持自定义 Header，这里可以使用带 Token 的 URL 参数（如果后端支持）
+    // 或者使用 fetch 下载 Blob。
+    // 鉴于 MVP 简单性，这里暂时假设后端仅验证 Header，对于 window.open 暂时无法传递 Header。
+    // 这是一个已知限制。为了解决这个问题，我们可以改为 fetch 下载 blob。
+
+    fetch(`${FILES_ENDPOINT}/${file.id}/download`, {
+      headers: getAuthHeaders()
+    })
+      .then(res => {
+        if (res.ok) return res.blob();
+        throw new Error("下载失败");
+      })
+      .then(blob => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = file.original_name;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      })
+      .catch(err => alert(err.message));
   }
 
   async function handleDelete(file: FileRecord) {
-    if (!confirm(`确定要删除「${file.original_name}」吗？`)) {
-      return;
-    }
-
-    setDeletingIds((current) => new Set(current).add(file.id));
-
+    if (!confirm(`确定删除 ${file.original_name}?`)) return;
+    setDeletingIds(prev => new Set(prev).add(file.id));
     try {
-      await deleteFile(file.id);
+      const res = await fetch(`${FILES_ENDPOINT}/${file.id}`, {
+        method: "DELETE",
+        headers: getAuthHeaders()
+      });
+      if (!res.ok) throw new Error("删除失败");
       await queryClient.invalidateQueries({ queryKey: ["files"] });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "删除失败";
-      alert(message);
+      alert(err instanceof Error ? err.message : "未知错误");
     } finally {
-      setDeletingIds((current) => {
-        const next = new Set(current);
+      setDeletingIds(prev => {
+        const next = new Set(prev);
         next.delete(file.id);
         return next;
       });
@@ -198,137 +193,75 @@ export default function App() {
 
   return (
     <main className="app-shell" style={{ maxWidth: 800, margin: "0 auto", padding: "2rem" }}>
-      <header>
-        <h1>DropLite</h1>
-        <p>轻量文件上传服务的 React 客户端，支持上传、下载和删除。</p>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h1>DropLite</h1>
+          <p>轻量文件上传服务</p>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ marginBottom: 8 }}>{user?.email}</div>
+          <button onClick={() => supabase.auth.signOut()}>退出登录</button>
+        </div>
       </header>
 
       <section style={{ marginTop: "2rem" }}>
-        <label htmlFor="uploader">选择文件（支持多选，单个文件 ≤ 100MB）</label>
-        <input id="uploader" type="file" multiple onChange={handleSelected} />
-        <p style={{ fontSize: "0.9rem", color: "#555" }}>
-          选择后会立即上传，并在下方显示进度。上传完成会自动刷新列表。
-        </p>
+        <input type="file" multiple onChange={handleSelected} />
       </section>
 
+      {/* Upload List */}
       {uploads.length > 0 && (
-        <section style={{ marginTop: "2rem" }}>
-          <h2>上传进度</h2>
-          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-            {uploads.map((task) => (
-              <li
-                key={task.id}
-                style={{
-                  padding: "0.75rem 0",
-                  borderBottom: "1px solid #eee"
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span>{task.filename}</span>
-                  <span>
-                    {task.status === "uploading" && `${task.progress}%`}
-                    {task.status === "success" && "完成"}
-                    {task.status === "error" && "失败"}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    height: 6,
-                    background: "#eee",
-                    borderRadius: 4,
-                    overflow: "hidden",
-                    marginTop: 8
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${task.progress}%`,
-                      height: "100%",
-                      transition: "width 0.2s ease",
-                      background:
-                        task.status === "error"
-                          ? "#d9534f"
-                          : task.status === "success"
-                            ? "#5cb85c"
-                            : "#4285f4"
-                    }}
-                  />
-                </div>
-                {task.error && (
-                  <p style={{ color: "#d9534f", margin: "0.5rem 0 0" }}>{task.error}</p>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
+        <ul style={{ marginTop: '1rem', listStyle: 'none', padding: 0 }}>
+          {uploads.map(task => (
+            <li key={task.id} style={{ marginBottom: '0.5rem', border: '1px solid #eee', padding: '0.5rem' }}>
+              <div>{task.filename} - {task.status} {task.progress}%</div>
+              {task.error && <div style={{ color: 'red' }}>{task.error}</div>}
+            </li>
+          ))}
+        </ul>
       )}
 
+      {/* File List */}
       <section style={{ marginTop: "2rem" }}>
-        <h2>
-          已上传文件 {isFetching && <small style={{ fontSize: "0.85rem" }}>刷新中…</small>}
-        </h2>
-        {isLoading && <p>加载中…</p>}
-        {error && !isLoading && <p style={{ color: "#d9534f" }}>加载失败：{String(error)}</p>}
-        {!isLoading && !error && sortedFiles.length === 0 && <p>暂无文件。</p>}
-        {!isLoading && !error && sortedFiles.length > 0 && (
-          <ul style={{ listStyle: "none", padding: 0 }}>
-            {sortedFiles.map((file) => (
-              <li
-                key={file.id}
-                style={{
-                  padding: "1rem 0",
-                  borderBottom: "1px solid #eee",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: "1rem",
-                  alignItems: "center",
-                  flexWrap: "wrap"
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 200 }}>
-                  <strong>{file.original_name}</strong>
-                  <div style={{ fontSize: "0.9rem", color: "#555" }}>
-                    {file.mime_type} · {formatBytes(file.size_bytes)}
-                  </div>
-                  <div style={{ fontSize: "0.85rem", color: "#666", marginTop: 4 }}>
-                    状态：{file.status} · {new Date(file.created_at).toLocaleString()}
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: "0.5rem" }}>
-                  <button
-                    onClick={() => handleDownload(file)}
-                    disabled={file.status !== "stored"}
-                    style={{
-                      padding: "0.4rem 0.8rem",
-                      background: file.status === "stored" ? "#4285f4" : "#ccc",
-                      color: "#fff",
-                      border: "none",
-                      borderRadius: 4,
-                      cursor: file.status === "stored" ? "pointer" : "not-allowed"
-                    }}
-                  >
-                    下载
-                  </button>
-                  <button
-                    onClick={() => handleDelete(file)}
-                    disabled={deletingIds.has(file.id)}
-                    style={{
-                      padding: "0.4rem 0.8rem",
-                      background: deletingIds.has(file.id) ? "#ccc" : "#d9534f",
-                      color: "#fff",
-                      border: "none",
-                      borderRadius: 4,
-                      cursor: deletingIds.has(file.id) ? "not-allowed" : "pointer"
-                    }}
-                  >
-                    {deletingIds.has(file.id) ? "删除中…" : "删除"}
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+        <h2>文件列表</h2>
+        {isLoading && <p>加载中...</p>}
+        <ul style={{ listStyle: 'none', padding: 0 }}>
+          {sortedFiles.map(file => (
+            <li key={file.id} style={{ padding: '1rem', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between' }}>
+              <div>
+                <strong>{file.original_name}</strong>
+                <div>{formatBytes(file.size_bytes)} - {new Date(file.created_at).toLocaleString()}</div>
+              </div>
+              <div style={{ gap: '0.5rem', display: 'flex' }}>
+                <button onClick={() => handleDownload(file)}>下载</button>
+                <button onClick={() => handleDelete(file)} disabled={deletingIds.has(file.id)}>删除</button>
+              </div>
+            </li>
+          ))}
+        </ul>
       </section>
     </main>
+  );
+}
+
+// 鉴权包装器：处理 Loading 和 Login/Main 切换
+function AuthWrapper() {
+  const { session, loading } = useAuth();
+
+  if (loading) {
+    return <div style={{ display: 'flex', justifyContent: 'center', marginTop: '50px' }}>加载中...</div>;
+  }
+
+  if (!session) {
+    return <LoginPage />;
+  }
+
+  return <MainApp />;
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AuthWrapper />
+    </AuthProvider>
   );
 }

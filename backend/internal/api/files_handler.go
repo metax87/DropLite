@@ -18,11 +18,15 @@ import (
 
 // FileHandler 提供文件元数据相关的 HTTP 端点。
 type FileHandler struct {
-	service *service.FileService
+	service       *service.FileService
+	maxUploadSize int64
 }
 
-func NewFileHandler(s *service.FileService) *FileHandler {
-	return &FileHandler{service: s}
+func NewFileHandler(s *service.FileService, maxUploadSize int64) *FileHandler {
+	return &FileHandler{
+		service:       s,
+		maxUploadSize: maxUploadSize,
+	}
 }
 
 func (h *FileHandler) RegisterRoutes(r chi.Router) {
@@ -44,7 +48,6 @@ type errorEnvelope struct {
 }
 
 const (
-	maxUploadSizeBytes    int64 = 100 * 1024 * 1024 // 100MB
 	multipartMemoryBudget int64 = 16 * 1024 * 1024
 )
 
@@ -59,7 +62,7 @@ func (h *FileHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSizeBytes+multipartMemoryBudget)
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadSize+multipartMemoryBudget)
 	defer r.Body.Close()
 
 	if err := r.ParseMultipartForm(multipartMemoryBudget); err != nil {
@@ -88,8 +91,8 @@ func (h *FileHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "file must not be empty")
 		return
 	}
-	if sizeBytes > maxUploadSizeBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "file exceeds size limit (100MB)")
+	if sizeBytes > h.maxUploadSize {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file exceeds size limit (%d bytes)", h.maxUploadSize))
 		return
 	}
 

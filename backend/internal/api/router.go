@@ -36,7 +36,15 @@ func NewRouter(cfg *config.Config, fileHandler *FileHandler) http.Handler {
 		if cfg.AuthEnabled {
 			// 需要鉴权的路由组
 			r.Group(func(r chi.Router) {
-				r.Use(dlmiddleware.APIKeyAuth(cfg.APIKeys))
+				if cfg.AuthProvider == "supabase" {
+					if cfg.SupabaseJWTSecret == "" && cfg.SupabaseURL == "" {
+						panic("Supabase JWT Secret OR Supabase URL is required")
+					}
+					r.Use(dlmiddleware.SupabaseAuth(cfg.SupabaseURL, cfg.SupabaseAnonKey, cfg.SupabaseJWTSecret))
+				} else {
+					// 默认使用 API Key
+					r.Use(dlmiddleware.APIKeyAuth(cfg.APIKeys))
+				}
 				fileHandler.RegisterRoutes(r)
 			})
 		} else {

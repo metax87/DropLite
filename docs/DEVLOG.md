@@ -51,3 +51,10 @@
   - 新增 `/metrics` 端点暴露 Prometheus 指标。
   - 创建 `.github/workflows/ci.yml` GitHub Actions 工作流：后端 lint/test/build，前端 lint/build，Docker 镜像构建。
   - 新增 `backend/Dockerfile` 多阶段构建，使用 alpine 最小镜像，包含健康检查和非 root 用户。
+- 集成 Supabase Auth：
+  - 后端配置新增 `AUTH_PROVIDER`, `SUPABASE_URL`, `SUPABASE_JWT_SECRET` 等字段。
+  - 新增 `middleware.SupabaseAuth` 验证 JWT 签发的 Bearer Token，并提取 Sub 作为 `owner_id`。
+  - 更新 frontend 依赖：`@supabase/supabase-js`, `@supabase/auth-ui-react`。
+  - 前端新增 `AuthProvider` 上下文管理 Session。
+  - 新增 `LoginPage` 使用 Supabase Auth UI 组件。
+  - `App.tsx` 集成登录状态检查，并自动为 API 请求附加 Bearer Token。

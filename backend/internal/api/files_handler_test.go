@@ -56,7 +56,7 @@ func TestFileHandler_CreateFile(t *testing.T) {
 	repo := &handlerRepo{}
 	writer := &handlerWriter{}
 	svc := service.NewFileService(repo, writer)
-	handler := NewFileHandler(svc)
+	handler := NewFileHandler(svc, 1024*1024*100)
 
 	req := newMultipartRequest(t, map[string]string{
 		"metadata": `{"env":"test"}`,
@@ -96,7 +96,7 @@ func TestFileHandler_ListFiles(t *testing.T) {
 		}},
 	}
 	svc := service.NewFileService(repo, nil)
-	handler := NewFileHandler(svc)
+	handler := NewFileHandler(svc, 1024*1024*100)
 
 	req := httptest.NewRequest(http.MethodGet, "/files?limit=1", nil)
 	rec := httptest.NewRecorder()

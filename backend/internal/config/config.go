@@ -23,8 +23,15 @@ type Config struct {
 	DBName             string
 	DBSSLMode          string
 	// 鉴权配置
-	AuthEnabled bool     // 是否启用 API Key 鉴权
-	APIKeys     []string // 有效的 API Keys 列表
+	AuthProvider string   // "apikey" 或 "supabase"
+	AuthEnabled  bool     // 是否启用鉴权
+	APIKeys      []string // API Key 模式下有效的 Keys 列表
+	// Supabase 配置
+	SupabaseURL       string // Supabase 项目 URL
+	SupabaseAnonKey   string // Supabase anon key（前端用）
+	SupabaseJWTSecret string // Supabase JWT Secret（后端验证用）
+	// Upload
+	MaxUploadSize int64
 	// 存储配置
 	StorageDriver string // "local" 或 "s3"
 	S3Endpoint    string // S3/MinIO 端点，不含协议
@@ -79,9 +86,17 @@ func Load() (*Config, error) {
 		// 开发环境默认 key
 		apiKeys = []string{"dev-api-key-123456"}
 	}
+	authProvider := envOrDefault("AUTH_PROVIDER", "apikey")
 
 	// 存储配置
 	storageDriver := envOrDefault("STORAGE_DRIVER", "local")
+
+	maxUploadSize := int64(1024 * 1024 * 1024) // Default 1GB
+	if val := os.Getenv("MAX_UPLOAD_SIZE"); val != "" {
+		if size, err := strconv.ParseInt(val, 10, 64); err == nil && size > 0 {
+			maxUploadSize = size
+		}
+	}
 
 	return &Config{
 		HTTPPort:           port,
@@ -96,7 +111,12 @@ func Load() (*Config, error) {
 		DBName:             envOrDefault("DB_NAME", "droplite"),
 		DBSSLMode:          envOrDefault("DB_SSL_MODE", "disable"),
 		AuthEnabled:        authEnabled,
+		AuthProvider:       authProvider,
 		APIKeys:            apiKeys,
+		SupabaseURL:        os.Getenv("SUPABASE_URL"),
+		SupabaseAnonKey:    os.Getenv("SUPABASE_ANON_KEY"),
+		SupabaseJWTSecret:  os.Getenv("SUPABASE_JWT_SECRET"),
+		MaxUploadSize:      maxUploadSize,
 		StorageDriver:      storageDriver,
 		S3Endpoint:         envOrDefault("S3_ENDPOINT", "localhost:9000"),
 		S3AccessKey:        envOrDefault("S3_ACCESS_KEY", "minioadmin"),
