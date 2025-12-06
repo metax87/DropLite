@@ -2,7 +2,16 @@ import { useMemo, useState, type ChangeEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
+const API_KEY = import.meta.env.VITE_API_KEY ?? "dev-api-key-123456";
 const FILES_ENDPOINT = `${API_BASE}/files`;
+
+// 通用请求头
+function getAuthHeaders(): Record<string, string> {
+  return {
+    Accept: "application/json",
+    Authorization: `ApiKey ${API_KEY}`
+  };
+}
 
 interface FileRecord {
   id: string;
@@ -24,7 +33,7 @@ interface UploadTask {
 
 async function fetchFiles(): Promise<FileRecord[]> {
   const response = await fetch(FILES_ENDPOINT, {
-    headers: { Accept: "application/json" }
+    headers: getAuthHeaders()
   });
   if (!response.ok) {
     throw new Error("无法获取文件列表");
@@ -37,6 +46,7 @@ function uploadFile(file: File, onProgress: (value: number) => void) {
   return new Promise<FileRecord>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", FILES_ENDPOINT);
+    xhr.setRequestHeader("Authorization", `ApiKey ${API_KEY}`);
 
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable) return;
@@ -75,6 +85,17 @@ function uploadFile(file: File, onProgress: (value: number) => void) {
   });
 }
 
+async function deleteFile(id: string): Promise<void> {
+  const response = await fetch(`${FILES_ENDPOINT}/${id}`, {
+    method: "DELETE",
+    headers: getAuthHeaders()
+  });
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({}));
+    throw new Error(errorBody.error ?? "删除失败");
+  }
+}
+
 function formatBytes(size: number) {
   if (!Number.isFinite(size) || size <= 0) return "-";
   const units = ["B", "KB", "MB", "GB"];
@@ -86,6 +107,7 @@ function formatBytes(size: number) {
 export default function App() {
   const queryClient = useQueryClient();
   const [uploads, setUploads] = useState<UploadTask[]>([]);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const { data: files = [], isLoading, isFetching, error } = useQuery({
     queryKey: ["files"],
     queryFn: fetchFiles
@@ -144,11 +166,41 @@ export default function App() {
     }
   }
 
+  function handleDownload(file: FileRecord) {
+    if (file.status !== "stored") {
+      alert("文件尚未就绪，无法下载");
+      return;
+    }
+    window.open(`${FILES_ENDPOINT}/${file.id}/download`, "_blank");
+  }
+
+  async function handleDelete(file: FileRecord) {
+    if (!confirm(`确定要删除「${file.original_name}」吗？`)) {
+      return;
+    }
+
+    setDeletingIds((current) => new Set(current).add(file.id));
+
+    try {
+      await deleteFile(file.id);
+      await queryClient.invalidateQueries({ queryKey: ["files"] });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "删除失败";
+      alert(message);
+    } finally {
+      setDeletingIds((current) => {
+        const next = new Set(current);
+        next.delete(file.id);
+        return next;
+      });
+    }
+  }
+
   return (
     <main className="app-shell" style={{ maxWidth: 800, margin: "0 auto", padding: "2rem" }}>
       <header>
         <h1>DropLite</h1>
-        <p>轻量文件上传服务的 React 客户端，现已对接真实的 multipart 上传接口。</p>
+        <p>轻量文件上传服务的 React 客户端，支持上传、下载和删除。</p>
       </header>
 
       <section style={{ marginTop: "2rem" }}>
@@ -197,8 +249,8 @@ export default function App() {
                         task.status === "error"
                           ? "#d9534f"
                           : task.status === "success"
-                          ? "#5cb85c"
-                          : "#4285f4"
+                            ? "#5cb85c"
+                            : "#4285f4"
                     }}
                   />
                 </div>
@@ -233,15 +285,44 @@ export default function App() {
                   flexWrap: "wrap"
                 }}
               >
-                <div>
+                <div style={{ flex: 1, minWidth: 200 }}>
                   <strong>{file.original_name}</strong>
                   <div style={{ fontSize: "0.9rem", color: "#555" }}>
                     {file.mime_type} · {formatBytes(file.size_bytes)}
                   </div>
+                  <div style={{ fontSize: "0.85rem", color: "#666", marginTop: 4 }}>
+                    状态：{file.status} · {new Date(file.created_at).toLocaleString()}
+                  </div>
                 </div>
-                <div style={{ textAlign: "right", fontSize: "0.85rem", color: "#666" }}>
-                  <div>状态：{file.status}</div>
-                  <div>{new Date(file.created_at).toLocaleString()}</div>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <button
+                    onClick={() => handleDownload(file)}
+                    disabled={file.status !== "stored"}
+                    style={{
+                      padding: "0.4rem 0.8rem",
+                      background: file.status === "stored" ? "#4285f4" : "#ccc",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: 4,
+                      cursor: file.status === "stored" ? "pointer" : "not-allowed"
+                    }}
+                  >
+                    下载
+                  </button>
+                  <button
+                    onClick={() => handleDelete(file)}
+                    disabled={deletingIds.has(file.id)}
+                    style={{
+                      padding: "0.4rem 0.8rem",
+                      background: deletingIds.has(file.id) ? "#ccc" : "#d9534f",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: 4,
+                      cursor: deletingIds.has(file.id) ? "not-allowed" : "pointer"
+                    }}
+                  >
+                    {deletingIds.has(file.id) ? "删除中…" : "删除"}
+                  </button>
                 </div>
               </li>
             ))}

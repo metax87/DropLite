@@ -22,6 +22,18 @@ type Config struct {
 	DBPassword         string
 	DBName             string
 	DBSSLMode          string
+	// 鉴权配置
+	AuthEnabled bool     // 是否启用 API Key 鉴权
+	APIKeys     []string // 有效的 API Keys 列表
+	// 存储配置
+	StorageDriver string // "local" 或 "s3"
+	S3Endpoint    string // S3/MinIO 端点，不含协议
+	S3AccessKey   string
+	S3SecretKey   string
+	S3Bucket      string
+	S3Region      string
+	S3UseSSL      bool // 是否使用 HTTPS
+	S3PathStyle   bool // 是否使用路径风格访问（MinIO 需要设为 true）
 }
 
 // Load 从环境变量加载配置，并提供默认值。
@@ -60,6 +72,17 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	// 鉴权配置
+	authEnabled := parseBoolEnv("AUTH_ENABLED", true)
+	apiKeys := parseList(os.Getenv("API_KEYS"))
+	if len(apiKeys) == 0 {
+		// 开发环境默认 key
+		apiKeys = []string{"dev-api-key-123456"}
+	}
+
+	// 存储配置
+	storageDriver := envOrDefault("STORAGE_DRIVER", "local")
+
 	return &Config{
 		HTTPPort:           port,
 		StorageDir:         storage,
@@ -72,6 +95,16 @@ func Load() (*Config, error) {
 		DBPassword:         envOrDefault("DB_PASSWORD", "droplite"),
 		DBName:             envOrDefault("DB_NAME", "droplite"),
 		DBSSLMode:          envOrDefault("DB_SSL_MODE", "disable"),
+		AuthEnabled:        authEnabled,
+		APIKeys:            apiKeys,
+		StorageDriver:      storageDriver,
+		S3Endpoint:         envOrDefault("S3_ENDPOINT", "localhost:9000"),
+		S3AccessKey:        envOrDefault("S3_ACCESS_KEY", "minioadmin"),
+		S3SecretKey:        envOrDefault("S3_SECRET_KEY", "minioadmin"),
+		S3Bucket:           envOrDefault("S3_BUCKET", "droplite"),
+		S3Region:           envOrDefault("S3_REGION", "us-east-1"),
+		S3UseSSL:           parseBoolEnv("S3_USE_SSL", false),
+		S3PathStyle:        parseBoolEnv("S3_PATH_STYLE", true),
 	}, nil
 }
 
@@ -138,6 +171,15 @@ func parseDurationEnv(key string, defaultValue time.Duration) (time.Duration, er
 		return defaultValue, nil
 	}
 	return value, nil
+}
+
+func parseBoolEnv(key string, defaultValue bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultValue
+	}
+	lower := strings.ToLower(raw)
+	return lower == "true" || lower == "1" || lower == "yes"
 }
 
 // PostgresDSN 生成标准 postgres:// 连接串，供数据访问层直接使用。

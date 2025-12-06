@@ -128,6 +128,10 @@ func (r *FileRepository) List(ctx context.Context, params repository.ListFilesPa
 			placeholders[i] = fmt.Sprintf("$%d", len(args))
 		}
 		whereClause = "WHERE status IN (" + strings.Join(placeholders, ",") + ")"
+	} else {
+		// 默认排除已删除的文件
+		args = append(args, repository.FileStatusDeleted)
+		whereClause = fmt.Sprintf("WHERE status != $%d", len(args))
 	}
 
 	args = append(args, limit)

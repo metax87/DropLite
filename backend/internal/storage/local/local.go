@@ -74,3 +74,27 @@ func (w *Writer) Write(ctx context.Context, key string, r io.Reader) (storage.Lo
 
 	return loc, nil
 }
+
+// Read 打开并返回指定 key 对应的文件内容。
+func (w *Writer) Read(ctx context.Context, key string) (io.ReadCloser, error) {
+	if w == nil {
+		return nil, fmt.Errorf("local writer uninitialized")
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	targetPath := filepath.Join(w.BaseDir, filepath.Clean(key))
+	file, err := os.Open(targetPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("file not found: %s", key)
+		}
+		return nil, fmt.Errorf("open file: %w", err)
+	}
+
+	return file, nil
+}

@@ -12,6 +12,7 @@ import (
 
 	"droplite/internal/repository"
 	"droplite/internal/service"
+
 	"github.com/go-chi/chi/v5"
 )
 
@@ -28,6 +29,9 @@ func (h *FileHandler) RegisterRoutes(r chi.Router) {
 	r.Route("/files", func(r chi.Router) {
 		r.Get("/", h.ListFiles)
 		r.Post("/", h.CreateFile)
+		r.Get("/{id}", h.GetFile)
+		r.Get("/{id}/download", h.DownloadFile)
+		r.Delete("/{id}", h.DeleteFile)
 	})
 }
 
@@ -175,6 +179,90 @@ func (h *FileHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, envelope{Data: files})
+}
+
+// DownloadFile 返回文件内容以供下载。
+func (h *FileHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
+	if h == nil {
+		writeError(w, http.StatusInternalServerError, "handler not initialized")
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "file id is required")
+		return
+	}
+
+	file, err := h.service.GetFile(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+
+	if file.Status != "stored" {
+		writeError(w, http.StatusNotFound, "file not available for download")
+		return
+	}
+
+	content, err := h.service.GetFileContent(r.Context(), file.StoragePath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read file")
+		return
+	}
+	defer content.Close()
+
+	w.Header().Set("Content-Type", file.MimeType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", file.OriginalName))
+	w.Header().Set("Content-Length", strconv.FormatInt(file.SizeBytes, 10))
+
+	if _, err := io.Copy(w, content); err != nil {
+		// 客户端可能已断开，无法再写入错误响应
+		return
+	}
+}
+
+// GetFile 返回单个文件的元数据。
+func (h *FileHandler) GetFile(w http.ResponseWriter, r *http.Request) {
+	if h == nil {
+		writeError(w, http.StatusInternalServerError, "handler not initialized")
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "file id is required")
+		return
+	}
+
+	file, err := h.service.GetFile(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, envelope{Data: file})
+}
+
+// DeleteFile 软删除指定文件。
+func (h *FileHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
+	if h == nil {
+		writeError(w, http.StatusInternalServerError, "handler not initialized")
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "file id is required")
+		return
+	}
+
+	if err := h.service.DeleteFile(r.Context(), id); err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{"id": id, "deleted": true}})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

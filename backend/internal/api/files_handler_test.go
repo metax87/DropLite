@@ -48,6 +48,10 @@ func (w *handlerWriter) Write(ctx context.Context, key string, r io.Reader) (sto
 	return storage.Location{Path: key}, nil
 }
 
+func (w *handlerWriter) Read(ctx context.Context, key string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader([]byte("mock content"))), nil
+}
+
 func TestFileHandler_CreateFile(t *testing.T) {
 	repo := &handlerRepo{}
 	writer := &handlerWriter{}

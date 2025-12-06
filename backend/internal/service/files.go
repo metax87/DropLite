@@ -12,16 +12,17 @@ import (
 
 	"droplite/internal/repository"
 	"droplite/internal/storage"
+
 	"github.com/google/uuid"
 )
 
 // FileService 封装文件元数据的业务流程。
 type FileService struct {
 	repo  repository.FileRepository
-	store storage.Writer
+	store storage.Storage
 }
 
-func NewFileService(repo repository.FileRepository, store storage.Writer) *FileService {
+func NewFileService(repo repository.FileRepository, store storage.Storage) *FileService {
 	return &FileService{repo: repo, store: store}
 }
 
@@ -82,6 +83,30 @@ func (s *FileService) ListFiles(ctx context.Context, params repository.ListFiles
 		return nil, errors.New("file service not initialized")
 	}
 	return s.repo.List(ctx, params)
+}
+
+// GetFile 根据 ID 获取文件元数据。
+func (s *FileService) GetFile(ctx context.Context, id string) (*repository.FileRecord, error) {
+	if s == nil || s.repo == nil {
+		return nil, errors.New("file service not initialized")
+	}
+	return s.repo.GetByID(ctx, id)
+}
+
+// GetFileContent 返回文件的内容流，调用方需负责关闭。
+func (s *FileService) GetFileContent(ctx context.Context, storagePath string) (io.ReadCloser, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("file service not initialized")
+	}
+	return s.store.Read(ctx, storagePath)
+}
+
+// DeleteFile 软删除文件（将状态更新为 deleted）。
+func (s *FileService) DeleteFile(ctx context.Context, id string) error {
+	if s == nil || s.repo == nil {
+		return errors.New("file service not initialized")
+	}
+	return s.repo.UpdateStatus(ctx, id, repository.FileStatusDeleted)
 }
 
 func validateRegisterInput(input RegisterFileInput) error {

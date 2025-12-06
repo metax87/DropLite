@@ -24,3 +24,30 @@
 - `FileService` 现在自动生成安全的存储路径，成功写入对象后会落库为 `stored` 状态，同时扩充单元测试覆盖路径生成与状态转移。
 - handler 测试替换为真实 multipart 构造，移除旧的 base64 JSON 请求；DEV 验证步骤更新为新的调用方式。
 - 前端基于 React Query 对接 `/files` 列表，并使用 `XMLHttpRequest + FormData` 实现实时进度的多文件上传体验，上传完成后自动刷新列表。
+
+## 2025-12-06
+- 新增文件下载 API：`GET /files/{id}/download` 端点，支持流式文件下载。
+- 扩展存储抽象层：`internal/storage/storage.go` 新增 `Reader` 接口与 `Storage` 组合接口，`local.Writer` 实现 `Read` 方法打开本地文件。
+- `FileService` 新增 `GetFile`（获取元数据）与 `GetFileContent`（获取文件内容流）方法。
+- 下载 API 校验文件状态，仅 `stored` 状态的文件可下载；设置正确的 `Content-Type`、`Content-Disposition` 与 `Content-Length` 响应头。
+- 更新测试 mock 以适配新接口，所有单元测试通过。
+- 新增文件删除 API：`DELETE /files/{id}` 端点，实现软删除（将状态更新为 `deleted`）。
+- 新增单个文件元数据 API：`GET /files/{id}` 端点，返回指定文件的详细信息。
+- 更新 `FileRepository.List` 方法，默认排除 `deleted` 状态的文件。
+- 前端新增下载和删除按钮：下载按钮打开新窗口下载文件，删除按钮触发确认对话框后执行软删除并刷新列表。
+- 新增 API Key 鉴权功能：
+  - 配置新增 `AUTH_ENABLED` 和 `API_KEYS` 环境变量，默认启用鉴权，开发环境默认 key 为 `dev-api-key-123456`。
+  - 新增 `internal/middleware/auth.go` 实现 API Key 验证中间件，支持 `Authorization: ApiKey <token>` 格式。
+  - 路由更新：`/healthz` 不需要鉴权，`/files` 相关端点需要有效 API Key。
+  - 前端更新：所有 API 请求自动附带 `Authorization` 头，API Key 通过 `VITE_API_KEY` 环境变量配置。
+- 新增 S3/MinIO 存储支持：
+  - 添加 MinIO Go SDK 依赖（`github.com/minio/minio-go/v7`）。
+  - 配置新增 `STORAGE_DRIVER`（local/s3）、`S3_ENDPOINT`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`S3_BUCKET` 等环境变量。
+  - 新增 `internal/storage/s3/s3.go` 实现 S3 兼容存储，支持自动创建 bucket。
+  - `main.go` 根据 `STORAGE_DRIVER` 配置动态选择本地或 S3 存储后端。
+  - `infra/docker-compose.yml` 新增 MinIO 服务，端口 9000（S3 API）和 9001（控制台）。
+- 新增可观测性与 CI/CD 功能：
+  - 添加 Prometheus 客户端依赖，新增 `internal/middleware/metrics.go` 收集 HTTP 请求指标（总数、耗时、大小）。
+  - 新增 `/metrics` 端点暴露 Prometheus 指标。
+  - 创建 `.github/workflows/ci.yml` GitHub Actions 工作流：后端 lint/test/build，前端 lint/build，Docker 镜像构建。
+  - 新增 `backend/Dockerfile` 多阶段构建，使用 alpine 最小镜像，包含健康检查和非 root 用户。

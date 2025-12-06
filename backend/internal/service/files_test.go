@@ -63,6 +63,13 @@ func (w *mockWriter) Write(ctx context.Context, key string, r io.Reader) (storag
 	return storage.Location{Path: key}, nil
 }
 
+func (w *mockWriter) Read(ctx context.Context, key string) (io.ReadCloser, error) {
+	if w.data == nil {
+		return nil, errors.New("not found")
+	}
+	return io.NopCloser(bytes.NewReader(w.data)), nil
+}
+
 func TestFileService_RegisterFile_WritesStorageAndRepository(t *testing.T) {
 	repo := &mockFileRepo{}
 	writer := &mockWriter{}
