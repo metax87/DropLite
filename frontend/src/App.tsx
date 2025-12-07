@@ -1,254 +1,47 @@
-import { useMemo, useState, type ChangeEvent } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState, useRef } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AuthProvider, useAuth } from "./components/AuthProvider";
 import LoginPage from "./pages/LoginPage";
-import { supabase } from "./lib/supabase";
+import { LogOut, Upload, FileText, Trash2, Download, Package, Loader2, AlertCircle } from "lucide-react";
 
-const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
-const FILES_ENDPOINT = `${API_BASE}/files`;
-
+// Types
 interface FileRecord {
   id: string;
   original_name: string;
-  mime_type: string;
   size_bytes: number;
-  storage_path: string;
+  mime_type: string;
   status: string;
   created_at: string;
 }
 
-interface UploadTask {
-  id: string;
-  filename: string;
-  progress: number;
-  status: "uploading" | "success" | "error";
-  error?: string;
+const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "") || "http://localhost:8080";
+
+function formatBytes(bytes: number, decimals = 2) {
+  if (!+bytes) return '0 Bytes';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
-function formatBytes(size: number) {
-  if (!Number.isFinite(size) || size <= 0) return "-";
-  const units = ["B", "KB", "MB", "GB"];
-  const exponent = Math.min(Math.floor(Math.log(size) / Math.log(1024)), units.length - 1);
-  const value = size / Math.pow(1024, exponent);
-  return `${value.toFixed(1)} ${units[exponent]}`;
-}
-
-// 主应用界面（仅在登录后渲染）
-function MainApp() {
-  const { session, user } = useAuth();
-  const queryClient = useQueryClient();
-  const [uploads, setUploads] = useState<UploadTask[]>([]);
-  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
-
-  // 这里的 session 理论上不应该为空，因为 MainApp 由 AuthWrapper 保护
-  // 但为了类型安全可以做个简单的断言或 return null（不影响 hooks 顺序）
-  if (!session) return null;
-
-  // 获取带 Token 的 Headers
-  const getAuthHeaders = () => ({
-    Accept: "application/json",
-    Authorization: `Bearer ${session.access_token}`
-  });
-
-  const fetchFiles = async (): Promise<FileRecord[]> => {
-    const response = await fetch(FILES_ENDPOINT, {
-      headers: getAuthHeaders()
-    });
-    if (!response.ok) {
-      throw new Error("无法获取文件列表");
-    }
-    const payload = await response.json();
-    return payload?.data ?? [];
-  };
-
-  const { data: files = [], isLoading, isFetching, error } = useQuery({
-    queryKey: ["files"],
-    queryFn: fetchFiles
-  });
-
-  const sortedFiles = useMemo(() => {
-    return [...files].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-  }, [files]);
-
-  const startUpload = async (file: File) => {
-    const uploadId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-    setUploads((current) => [
-      ...current,
-      { id: uploadId, filename: file.name, progress: 0, status: "uploading" }
-    ]);
-
-    try {
-      await new Promise<FileRecord>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", FILES_ENDPOINT);
-        xhr.setRequestHeader("Authorization", `Bearer ${session.access_token}`);
-
-        xhr.upload.onprogress = (event) => {
-          if (!event.lengthComputable) return;
-          const percent = Math.round((event.loaded / event.total) * 100);
-          setUploads((current) =>
-            current.map((task) =>
-              task.id === uploadId ? { ...task, progress: percent, status: "uploading" } : task
-            )
-          );
-        };
-
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              const body = JSON.parse(xhr.responseText);
-              resolve(body.data);
-            } catch (e) {
-              reject(new Error("解析响应失败"));
-            }
-          } else {
-            try {
-              const body = JSON.parse(xhr.responseText);
-              reject(new Error(body.error ?? "上传失败"));
-            } catch (e) {
-              reject(new Error("上传失败"));
-            }
-          }
-        };
-
-        xhr.onerror = () => reject(new Error("网络错误"));
-
-        const formData = new FormData();
-        formData.append("file", file, file.name);
-        xhr.send(formData);
-      });
-
-      setUploads((current) =>
-        current.map((task) =>
-          task.id === uploadId ? { ...task, progress: 100, status: "success" } : task
-        )
-      );
-      await queryClient.invalidateQueries({ queryKey: ["files"] });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "上传失败";
-      setUploads((current) =>
-        current.map((task) =>
-          task.id === uploadId ? { ...task, status: "error", error: message } : task
-        )
-      );
-    }
-  };
-
-  async function handleSelected(event: ChangeEvent<HTMLInputElement>) {
-    const selection = event.target.files;
-    if (!selection) return;
-    Array.from(selection).forEach(file => void startUpload(file));
-    event.target.value = "";
-  }
-
-  function handleDownload(file: FileRecord) {
-    // 使用 fetch 获取下载链接或 blob，这里简化为直接打开链接
-    // 注意：如果是私有文件，通常需要预签名 URL 或通过 API 代理
-    // 对于 DropLite，下载 API 同样需要 Bearer Token。
-    // 由于浏览器直接打开 URL 不支持自定义 Header，这里可以使用带 Token 的 URL 参数（如果后端支持）
-    // 或者使用 fetch 下载 Blob。
-    // 鉴于 MVP 简单性，这里暂时假设后端仅验证 Header，对于 window.open 暂时无法传递 Header。
-    // 这是一个已知限制。为了解决这个问题，我们可以改为 fetch 下载 blob。
-
-    fetch(`${FILES_ENDPOINT}/${file.id}/download`, {
-      headers: getAuthHeaders()
-    })
-      .then(res => {
-        if (res.ok) return res.blob();
-        throw new Error("下载失败");
-      })
-      .then(blob => {
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = file.original_name;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-      })
-      .catch(err => alert(err.message));
-  }
-
-  async function handleDelete(file: FileRecord) {
-    if (!confirm(`确定删除 ${file.original_name}?`)) return;
-    setDeletingIds(prev => new Set(prev).add(file.id));
-    try {
-      const res = await fetch(`${FILES_ENDPOINT}/${file.id}`, {
-        method: "DELETE",
-        headers: getAuthHeaders()
-      });
-      if (!res.ok) throw new Error("删除失败");
-      await queryClient.invalidateQueries({ queryKey: ["files"] });
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "未知错误");
-    } finally {
-      setDeletingIds(prev => {
-        const next = new Set(prev);
-        next.delete(file.id);
-        return next;
-      });
-    }
-  }
-
+export default function App() {
   return (
-    <main className="app-shell" style={{ maxWidth: 800, margin: "0 auto", padding: "2rem" }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <h1>DropLite</h1>
-          <p>轻量文件上传服务</p>
-        </div>
-        <div style={{ textAlign: 'right' }}>
-          <div style={{ marginBottom: 8 }}>{user?.email}</div>
-          <button onClick={() => supabase.auth.signOut()}>退出登录</button>
-        </div>
-      </header>
-
-      <section style={{ marginTop: "2rem" }}>
-        <input type="file" multiple onChange={handleSelected} />
-      </section>
-
-      {/* Upload List */}
-      {uploads.length > 0 && (
-        <ul style={{ marginTop: '1rem', listStyle: 'none', padding: 0 }}>
-          {uploads.map(task => (
-            <li key={task.id} style={{ marginBottom: '0.5rem', border: '1px solid #eee', padding: '0.5rem' }}>
-              <div>{task.filename} - {task.status} {task.progress}%</div>
-              {task.error && <div style={{ color: 'red' }}>{task.error}</div>}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {/* File List */}
-      <section style={{ marginTop: "2rem" }}>
-        <h2>文件列表</h2>
-        {isLoading && <p>加载中...</p>}
-        <ul style={{ listStyle: 'none', padding: 0 }}>
-          {sortedFiles.map(file => (
-            <li key={file.id} style={{ padding: '1rem', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between' }}>
-              <div>
-                <strong>{file.original_name}</strong>
-                <div>{formatBytes(file.size_bytes)} - {new Date(file.created_at).toLocaleString()}</div>
-              </div>
-              <div style={{ gap: '0.5rem', display: 'flex' }}>
-                <button onClick={() => handleDownload(file)}>下载</button>
-                <button onClick={() => handleDelete(file)} disabled={deletingIds.has(file.id)}>删除</button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </section>
-    </main>
+    <AuthProvider>
+      <AuthWrapper />
+    </AuthProvider>
   );
 }
 
-// 鉴权包装器：处理 Loading 和 Login/Main 切换
 function AuthWrapper() {
   const { session, loading } = useAuth();
 
   if (loading) {
-    return <div style={{ display: 'flex', justifyContent: 'center', marginTop: '50px' }}>加载中...</div>;
+    return (
+      <div className="auth-container">
+        <Loader2 className="animate-spin" size={48} color="#6366f1" />
+      </div>
+    );
   }
 
   if (!session) {
@@ -258,10 +51,240 @@ function AuthWrapper() {
   return <MainApp />;
 }
 
-export default function App() {
+function MainApp() {
+  const { session, signOut } = useAuth();
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
+
+  // Fetch Files
+  const { data: files, isLoading, isError } = useQuery<FileRecord[]>({
+    queryKey: ["files"],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/files`, {
+        headers: {
+          Authorization: `Bearer ${session?.access_token}`,
+        },
+      });
+      if (!res.ok) throw new Error("Failed to fetch files");
+      const json = await res.json();
+      return json.data || [];
+    },
+  });
+
+  // Upload Mutation
+  const uploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `${API_BASE}/files`, true);
+        xhr.setRequestHeader("Authorization", `Bearer ${session?.access_token}`);
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            setProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(JSON.parse(xhr.response));
+          } else {
+            reject(new Error(xhr.statusText || "Upload failed"));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error("Network error"));
+
+        const formData = new FormData();
+        formData.append("file", file);
+        xhr.send(formData);
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["files"] });
+      setUploading(false);
+      setProgress(0);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    },
+    onError: (err) => {
+      console.error(err);
+      setUploading(false);
+      alert("上传失败: " + err);
+    },
+  });
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setUploading(true);
+      uploadMutation.mutate(e.target.files[0]);
+    }
+  };
+
+  const handleDownload = async (id: string, name: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/files/${id}/download`, {
+        headers: {
+          Authorization: `Bearer ${session?.access_token}`,
+        },
+      });
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
+    } catch (error) {
+      console.error(error);
+      alert("下载失败");
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("确定要删除这个文件吗？")) return;
+    try {
+      const res = await fetch(`${API_BASE}/files/${id}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${session?.access_token}`,
+        },
+      });
+      if (!res.ok) throw new Error("Delete failed");
+      queryClient.invalidateQueries({ queryKey: ["files"] });
+    } catch (error) {
+      console.error(error);
+      alert("删除失败");
+    }
+  };
+
   return (
-    <AuthProvider>
-      <AuthWrapper />
-    </AuthProvider>
+    <div>
+      <header className="app-header">
+        <div className="container" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', height: '100%' }}>
+          <div className="logo">
+            <Package size={28} color="#818cf8" />
+            <span>DropLite</span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+              {session?.user?.email}
+            </span>
+            <button className="btn btn-secondary" onClick={() => signOut()}>
+              <LogOut size={16} /> 退出
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="container">
+        {/* Upload Section */}
+        <div className="card">
+          <div
+            className={`upload-zone ${uploading ? 'dragging' : ''}`}
+            onClick={() => !uploading && fileInputRef.current?.click()}
+          >
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileChange}
+              style={{ display: "none" }}
+              disabled={uploading}
+            />
+
+            {uploading ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+                <Loader2 className="animate-spin" size={48} color="#6366f1" />
+                <div style={{ width: '100%', maxWidth: '300px', background: 'rgba(255,255,255,0.1)', borderRadius: '10px', overflow: 'hidden', height: '8px' }}>
+                  <div style={{ width: `${progress}%`, background: '#6366f1', height: '100%', transition: 'width 0.2s' }} />
+                </div>
+                <p>正在上传... {progress}%</p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+                <div style={{ background: 'rgba(99, 102, 241, 0.1)', padding: '1rem', borderRadius: '50%' }}>
+                  <Upload size={32} color="#6366f1" />
+                </div>
+                <div>
+                  <h3 style={{ marginBottom: '0.5rem' }}>点击或拖拽文件到这里上传</h3>
+                  <p>支持最大 5GB 文件</p>
+                </div>
+                <button className="btn btn-primary">选择文件</button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* File List */}
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+            <h2>我的文件</h2>
+            <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+              {files?.length || 0} 个文件
+            </div>
+          </div>
+
+          {isLoading ? (
+            <div style={{ textAlign: 'center', padding: '2rem' }}>
+              <Loader2 className="animate-spin" size={24} color="#6366f1" />
+            </div>
+          ) : isError ? (
+            <div style={{ color: 'var(--danger)', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
+              <AlertCircle size={20} /> 加载失败
+            </div>
+          ) : files?.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
+              <p>暂无文件，快去上传一个吧！</p>
+            </div>
+          ) : (
+            <div className="file-list">
+              {files?.map((file) => (
+                <div key={file.id} className="file-item">
+                  <div className="file-icon">
+                    <FileText size={24} />
+                  </div>
+
+                  <div style={{ minWidth: 0 }}>
+                    <div className="file-name" title={file.original_name}>
+                      {file.original_name}
+                    </div>
+                    <div className="file-meta">
+                      {new Date(file.created_at).toLocaleString()}
+                    </div>
+                  </div>
+
+                  <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>
+                    {formatBytes(file.size_bytes)}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      className="btn btn-icon"
+                      onClick={() => handleDownload(file.id, file.original_name)}
+                      title="下载"
+                    >
+                      <Download size={18} />
+                    </button>
+                    <button
+                      className="btn btn-icon"
+                      onClick={() => handleDelete(file.id)}
+                      title="删除"
+                      style={{ color: 'var(--danger)' }}
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
   );
 }
